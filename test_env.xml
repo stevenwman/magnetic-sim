@@ -1,0 +1,23 @@
+<mujoco model="onshape">
+    <compiler angle="radian"/>
+
+    <visual>
+        <global offwidth="1920" offheight="1080"/>
+    </visual>
+
+    <worldbody>
+        <!-- create a box geom-->
+        <body name="box" pos="0 0.2 0.1">
+            <geom name="metal_box" type="box" size="0.1 0.1 0.1" />
+        </body>
+
+        <body name="magnet_box" pos="0 0 0.05">
+            <freejoint/>
+            <geom name="mag_box" type="box" size="0.05 0.05 0.05" rgba="0.8 0.2 0.2 0.5"/>
+            <geom name="mag_center" pos="0 0.04 0" type="sphere" size="0.01"/>
+        </body>
+
+
+    </worldbody>
+
+</mujoco>
