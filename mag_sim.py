@@ -11,7 +11,8 @@ data = mujoco.MjData(model)
 t_max = 100.0  # Maximum simulation time in seconds
 start_time = time.time()
 
-MU_0 = 4 * np.pi * 1e-7
+MU_0 = np.pi * 1e-7
+max_force = 200
 
 def calculate_magnetic_force(
     distance: float,
@@ -47,7 +48,7 @@ def calculate_magnetic_force(
 
     # 2. Apply the method of images.
     # The distance between the centers of the real and image dipoles is 2 * distance.
-    z = 2 * distance
+    z = 2 * distance ** 2
 
     # 3. Calculate the force between two aligned magnetic dipoles.
     # The force between two aligned dipoles is F = (3 * μ₀ * m₁ * m₂) / (2 * π * z⁴).
@@ -55,7 +56,7 @@ def calculate_magnetic_force(
 
     return force
 
-def add_visual_arrow(scene, from_point, to_point, radius=0.01, rgba=(0, 0, 1, 1)):
+def add_visual_arrow(scene, from_point, to_point, radius=0.005, rgba=(0, 0, 1, 1)):
     """
     Adds a single visual arrow to the mjvScene.
     This is a visual-only object and does not affect the physics.
@@ -96,56 +97,131 @@ def add_visual_arrow(scene, from_point, to_point, radius=0.01, rgba=(0, 0, 1, 1)
 
     # Increment the number of geoms in the scene
     scene.ngeom += 1
-    print(scene.ngeom, "geoms in scene")
+    # print(scene.ngeom, "geoms in scene")
+
+key_dict = {
+    'paused' : False,
+    'x_frc' : False,
+    'y_frc' : False,
+    'z_frc' : False
+}
+
+def key_callback(keycode):
+    global key_dict 
+    if chr(keycode) == ' ':
+        key_dict['paused'] = not key_dict['paused']
+    elif chr(keycode) == '1':
+        key_dict['x_frc'] = True
+    elif chr(keycode) == '2':
+        key_dict['y_frc'] = True
+    elif chr(keycode) == '3':
+        key_dict['z_frc'] = True
 
 
-with mujoco.viewer.launch_passive(model, data) as viewer:
+with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as viewer:
     # Set the simulation timestep
-    model.opt.timestep = 0.01  # 100 Hz simulation frequency
+    model.opt.timestep = 0.0001  # 100 Hz simulation frequency
+    model.opt.enableflags |= 1 << 0  # enable override
+    # model.opt.iterations = 200
+    model.opt.o_solref[0] = 4e-4
+    model.opt.o_solref[1] = 25
+    model.opt.o_solimp[0] = 0.99
+    model.opt.o_solimp[1] = 0.99
+    model.opt.o_solimp[2] = 1e-3
+
+    model.opt.o_friction[0] = 1
+    model.opt.o_friction[1] = 1
+    model.opt.o_friction[2] = 0.001
+    model.opt.o_friction[3] = 0.0005
+    model.opt.o_friction[4] = 0.0005
 
     # Get the simulation timestep
     timestep = model.opt.timestep
 
+    # mag_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "mag_center")
+    mag_ids = []
+    mag_wrenches = []
+    for i in range(5):
+        mag_ids.append(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"mag_pt{i}"))
+    box_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "metal_box")
+    mag_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "mag_box")
+    mag_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "magnet_body")
+
     # Main simulation loop
     while viewer.is_running():
-        mag_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "mag_center")
-        box_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "metal_box")
-        mag_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "magnet_body")
-
-        fromto = np.array([0, 0, 0, 0, 0, 0], dtype=np.float64)
-        distance = mujoco.mj_geomDistance(model, data, mag_id, box_id, 0.5, fromto)
-        vec = fromto[3:6] - fromto[0:3]
-
-        print(f"dx: {distance:.2f}, fromto: {np.round(fromto,2)}")
         viewer.user_scn.ngeom = 0
-        add_visual_arrow(viewer.user_scn, fromto[0:3], fromto[3:6]+vec, rgba=(0, 0, 1, 1))
+        obj_pos = data.body("magnet_box").xpos
+        for mag_id in mag_ids:
+            # directly from mag-dot to mag surface
+            raw_fromto = np.zeros(6, dtype=np.float64)
+            raw_distance = mujoco.mj_geomDistance(model, data, mag_id, box_id, 50, raw_fromto)
+            raw_vec = raw_fromto[3:6] - raw_fromto[0:3]
 
-        if distance > 1e-5: # Add a small threshold to prevent division by zero
-            # 1. Define magnet properties (you would get these from your model or constants)
-            magnet_remanence = 1.3  # Example: N42 grade neodymium
-            magnet_volume = (0.02**3) # Example: 2cm cube magnet
+            mag_fromto = np.zeros(6, dtype=np.float64)
+            normal_dist = mujoco.mj_geomDistance(model, data, mag_id, mag_geom_id, 1, mag_fromto)
+            mag_vec = mag_fromto[3:6] - mag_fromto[0:3]
+            mag_vec /= np.linalg.norm(mag_vec)
+            
+            proj_vec = np.dot(raw_vec, mag_vec) * mag_vec
+            fromto = np.concatenate([mag_fromto[0:3], mag_fromto[0:3] + proj_vec])
+            vec = fromto[3:6] - fromto[0:3]
 
-            # 2. Calculate the force magnitude (using a function like we made before)
-            # This is a placeholder for your actual force function
-            force_magnitude = calculate_magnetic_force(distance, magnet_remanence, magnet_volume)
+            distance = raw_distance if np.dot(raw_vec, mag_vec) > 0 else 0
 
-            # 3. Calculate the normalized direction vector for attraction
-            from_point = fromto[0:3]
-            to_point = fromto[3:6]
-            direction_vector = to_point - from_point
-            normalized_direction = direction_vector / np.linalg.norm(direction_vector)
+            # print(f"dx: {distance:.2f}, fromto: {np.round(fromto,2)}")
+            
+            add_visual_arrow(viewer.user_scn, fromto[0:3], fromto[3:6], rgba=(0, 0, 1, 1))
 
-            # 4. Calculate the final 3D force vector
-            force_vector = force_magnitude * normalized_direction
+            if distance > 1e-3: # Add a small threshold to prevent division by zero
+                # 1. Define magnet properties (you would get these from your model or constants)
+                magnet_remanence = 1.3  # Example: N42 grade neodymium
+                magnet_volume = (0.02**3) # Example: 2cm cube magnet
 
-            # 5. Apply the force to the magnet's body
-            # data.xfrc_applied is a [nbody x 6] array (force, torque)
-            # We add our force to the correct body's linear force component.
-            data.xfrc_applied[mag_body_id, 0:3] += force_vector
+                # 2. Calculate the force magnitude (using a function like we made before)
+                # This is a placeholder for your actual force function
+                force_magnitude = calculate_magnetic_force(distance, magnet_remanence, magnet_volume)
+
+                # 3. Calculate the normalized direction vector for attraction
+                from_point = fromto[0:3]
+                to_point = fromto[3:6]
+                direction_vector = to_point - from_point
+                normalized_direction = direction_vector / np.linalg.norm(direction_vector)
+
+                if force_magnitude > max_force / len(mag_ids):
+                    force_magnitude = max_force / len(mag_ids)
+                    print(f"force max {force_magnitude} enforced")
+
+                # 4. Calculate the final 3D force vector
+                force_vector = force_magnitude * normalized_direction
+
+                mag_pt_pos = data.geom(mag_id).xpos
+                # Calculate the distance from the magnet's center to the point of application
+                moment_arm = mag_pt_pos - obj_pos
+                moment = np.cross(moment_arm, force_vector)
+
+                wrench = np.round(np.concatenate((force_vector, moment)),5)
+
+                # 5. Apply the force to the magnet's body
+                # data.xfrc_applied is a [nbody x 6] array (force, torque)
+                # We add our force to the correct body's linear force component.
+
+                print(f"Applying wrench: {wrench} at distance: {distance:.5f} m")
+
+                # if np.isnan(force_vector).any():
+                #     print(direction_vector)
+                #     print("Warning: Force vector contains NaN values. Skipping force application.")
+                #     break
+
+                # Apply the force to the magnet's body
+
+                data.xfrc_applied[mag_body_id] += wrench
 
         step_start_time = time.time()
-        mujoco.mj_step(model, data)
-        viewer.sync()
+
+        if not key_dict['paused']:
+            mujoco.mj_step(model, data)
+            viewer.sync()
+
         time_until_next_step = timestep - (time.time() - step_start_time)
 
         if time_until_next_step > 0:
