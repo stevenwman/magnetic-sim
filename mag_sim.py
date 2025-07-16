@@ -151,6 +151,9 @@ with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as vie
     while viewer.is_running():
         viewer.user_scn.ngeom = 0
         obj_pos = data.body("magnet_box").xpos
+
+        tot_wrench = np.zeros(6, dtype=np.float64)
+
         for mag_id in mag_ids:
             # directly from mag-dot to mag surface
             raw_fromto = np.zeros(6, dtype=np.float64)
@@ -172,7 +175,8 @@ with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as vie
             
             add_visual_arrow(viewer.user_scn, fromto[0:3], fromto[3:6], rgba=(0, 0, 1, 1))
 
-            if distance > 1e-3: # Add a small threshold to prevent division by zero
+            wrench = np.zeros(6, dtype=np.float64)
+            if distance > 1e-3 and distance < 0.02: # Add a small threshold to prevent division by zero
                 # 1. Define magnet properties (you would get these from your model or constants)
                 magnet_remanence = 1.3  # Example: N42 grade neodymium
                 magnet_volume = (0.02**3) # Example: 2cm cube magnet
@@ -189,7 +193,7 @@ with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as vie
 
                 if force_magnitude > max_force / len(mag_ids):
                     force_magnitude = max_force / len(mag_ids)
-                    print(f"force max {force_magnitude} enforced")
+                    print(f"force max enforced")
 
                 # 4. Calculate the final 3D force vector
                 force_vector = force_magnitude * normalized_direction
@@ -205,7 +209,7 @@ with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as vie
                 # data.xfrc_applied is a [nbody x 6] array (force, torque)
                 # We add our force to the correct body's linear force component.
 
-                print(f"Applying wrench: {wrench} at distance: {distance:.5f} m")
+                # print(f"Applying wrench: {wrench} at distance: {distance:.5f} m")
 
                 # if np.isnan(force_vector).any():
                 #     print(direction_vector)
@@ -213,8 +217,10 @@ with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as vie
                 #     break
 
                 # Apply the force to the magnet's body
+                tot_wrench += wrench
 
-                data.xfrc_applied[mag_body_id] += wrench
+        print(f"Applying wrench: {wrench} at distance: {distance:.5f} m")
+        data.xfrc_applied[mag_body_id] += tot_wrench
 
         step_start_time = time.time()
 
